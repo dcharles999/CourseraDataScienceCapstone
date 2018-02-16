@@ -1,0 +1,203 @@
+---
+title: "Task 3 Modeling"
+author: "Diego Charles"
+date: "February 10, 2018"
+output: html_document
+---
+
+## Objective
+
+The goal here is to build your first simple model for the relationship between words. This is the first step in building a predictive text mining application. You will explore simple models and discover more complicated modeling techniques.
+
+## Tasks to accomplish
+
+Build basic n-gram model - using the exploratory analysis you performed, build a basic n-gram model for predicting the next word based on the previous 1, 2, or 3 words.
+
+Build a model to handle unseen n-grams - in some cases people will want to type a combination of words that does not appear in the corpora. Build a model to handle cases where a particular n-gram isn't observed.
+
+## Questions to consider
+
+How can you efficiently store an n-gram model (think Markov Chains)?
+How can you use the knowledge about word frequencies to make your model smaller and more efficient?
+How many parameters do you need (i.e. how big is n in your n-gram model)?
+Can you think of simple ways to "smooth" the probabilities (think about giving all n-grams a non-zero probability even if they aren't observed in the data) ?
+How do you evaluate whether your model is any good?
+How can you use backoff models to estimate the probability of unobserved n-grams?
+Hints, tips, and tricks
+
+As you develop your prediction model, two key aspects that you will have to keep in mind are the size and runtime of the algorithm. These are defined as:
+
+Size: the amount of memory (physical RAM) required to run the model in R
+Runtime: The amount of time the algorithm takes to make a prediction given the acceptable input
+Your goal for this prediction model is to minimize both the size and runtime of the model in order to provide a reasonable experience to the user.
+
+Keep in mind that currently available predictive text models can run on mobile phones, which typically have limited memory and processing power compared to desktop computers. Therefore, you should consider very carefully (1) how much memory is being used by the objects in your workspace; and (2) how much time it is taking to run your model. Ultimately, your model will need to run in a Shiny app that runs on the shinyapps.io server.
+
+Tips, tricks, and hints
+
+Here are a few tools that may be of use to you as you work on their algorithm:
+
+object.size(): this function reports the number of bytes that an R object occupies in memory
+Rprof(): this function runs the profiler in R that can be used to determine where bottlenecks in your function may exist. The profr package (available on CRAN) provides some additional tools for visualizing and summarizing profiling data.
+gc(): this function runs the garbage collector to retrieve unused RAM for R. In the process it tells you how much memory is currently being used by R.
+There will likely be a tradeoff that you have to make in between size and runtime. For example, an algorithm that requires a lot of memory, may run faster, while a slower algorithm may require less memory. You will have to find the right balance between the two in order to provide a good experience to the user.
+
+# Prep work and exploration
+## Load libraries
+```{r libraries, echo=FALSE}
+library(NLP)
+library(tm)
+library(fpc)
+library(RColorBrewer)
+library(wordcloud)
+library(ggplot2)
+library(stringi)
+library(data.table)
+library(slam)
+require(readtext)
+require(quanteda)
+```
+
+## Download data
+```{r download}
+if(!file.exists("Coursera-SwiftKey.zip")){
+   download.file("https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip","Coursera-SwiftKey.zip")
+   unzip("Coursera-SwiftKey.zip")
+}
+```
+
+## Load data
+```{r DataLoading, cache=TRUE}
+blogs <- readLines("final/en_US/en_US.blogs.txt",encoding = "UTF-8", skipNul = TRUE)
+news <- readLines("final/en_US/en_US.news.txt",encoding = "UTF-8", skipNul = TRUE)
+twitter <- readLines("final/en_US/en_US.twitter.txt",encoding = "UTF-8", skipNul = TRUE)
+```
+
+## Exploration
+```{r exploration}
+b <- file.size("final/en_US/en_US.blogs.txt")
+n <- file.size("final/en_US/en_US.news.txt")
+t <- file.size("final/en_US/en_US.twitter.txt")
+matrix(c((b/1024^2),(n/1024^2),(t/1024^2)), dimnames = list(c("blogs","news","twitter"),"file size in Mb"))
+
+filesSum <- function(blogs,news,twitter){
+   m <- matrix(c(NROW(blogs),NROW(news),NROW(twitter),sum(nchar(blogs)),sum(nchar(news)),sum(nchar(twitter)),max(nchar(blogs)),max(nchar(news)),max(nchar(twitter))),byrow = FALSE,nrow=3,ncol=3)
+   counts <- sapply(list(blogs,news,twitter),stri_stats_latex)['Words',]
+   corpusSummary <- cbind(m,counts)
+   colnames(corpusSummary) <- c("# Lines","# Characters","Max length", "# Words")
+   rownames(corpusSummary) <- c("blogs","news","twitter")
+   corpusSummary
+}
+
+filesSum(blogs,news,twitter)
+
+```
+
+## Clean Dataset
+```{r cleaning, cache=TRUE}
+blogs <- iconv(blogs,"UTF-8","ASCII", "")
+news <- iconv(news,"UTF-8","ASCII", "")
+twitter <- iconv(twitter,"UTF-8","ASCII", "")
+filesSum(blogs,news,twitter)
+```
+
+## Subset Data
+```{r subset, cache=TRUE}
+subNum <- .1
+b1 <- sample(blogs,length(blogs)*subNum)
+n1 <- sample(news,length(news)*subNum)
+t1 <- sample(twitter,length(twitter)*subNum)
+filesSum(b1,n1,t1)
+rm(blogs)
+rm(news)
+rm(twitter)
+
+```
+
+## Merge data files
+```{r merge}
+set.seed(2205)
+trngSets <- c(b1,n1,t1)
+trngTokens <- tokens(trngSets, what = "word", remove_numbers = TRUE, remove_punct = TRUE,
+remove_symbols = TRUE, remove_separators = TRUE,
+remove_twitter = TRUE, remove_hyphens = TRUE, remove_url = TRUE,
+ngrams = 2, skip = 0L, concatenator = " ",
+verbose = FALSE)
+head(trngTokens)
+```
+
+
+# Build basic n-gram model
+Using the exploratory analysis you performed, build a basic n-gram model for predicting the next word based on the previous 1, 2, or 3 words.
+Starting with an input of 1 word, predict the next.
+
+Prediction based on last word
+```{r}
+predFrom1 <- function(w1, biFreq){
+   input <- paste0("^",tolower(w1)," ")
+   values <- grep(input,names(biFreq))
+   if(length(values) != 0){
+      biPred <- sort(biFreq[values],decreasing = TRUE)[1]
+      biPred <- substr(names(biPred), nchar(input), nchar(names(biPred)))
+      biPred
+   }else{
+      # Assume that if there is no prediction word, that it is the end of a sentance (naive... I know)
+      print(".")
+   }
+}
+```
+
+Trial runs from some of the most frequent first words
+```{r}
+predFrom1("He", biFreq)
+predFrom1("I", biFreq)
+predFrom1("That", biFreq)
+predFrom1("in", biFreq)
+predFrom1("have", biFreq)
+predFrom1("but", biFreq)
+predFrom1("we", biFreq)
+predFrom1("they", biFreq)
+predFrom1("under", biFreq)
+predFrom1("exuberant", biFreq)
+predFrom1("fantastic", biFreq)
+predFrom1("lol", biFreq)
+
+```
+
+
+Prediction based on last two words
+```{r}
+predFrom2 <- function(w1, w2, triFreq){
+   input <- paste0("^",tolower(w1)," ", tolower(w2), " ")
+   values <- grep(input,names(triFreq))
+   if(length(values) != 0){
+      biPred <- sort(triFreq[values],decreasing = TRUE)[1]
+      biPred <- substr(names(biPred), nchar(input), nchar(names(biPred)))
+      biPred
+   }else{
+      # Assume that if there is no prediction word, that it is the end of a sentance (naive... I know)
+      print(".")
+   }
+}
+```
+
+Trial runs from some of the most frequent first words
+```{r}
+predFrom2("He","was", triFreq)
+predFrom2("I","was", triFreq)
+predFrom2("That","the", triFreq)
+predFrom2("in","the", triFreq)
+predFrom2("have","a", triFreq)
+predFrom2("but","i", triFreq)
+predFrom2("one","Of", triFreq)
+predFrom2("me","Of", triFreq)
+
+```
+
+
+
+
+
+
+# Build a model to handle unseen n-grams
+In some cases people will want to type a combination of words that does not appear in the corpora. Build a model to handle cases where a particular n-gram isn't observed.
