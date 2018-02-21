@@ -56,6 +56,8 @@ library(data.table)
 library(slam)
 require(readtext)
 require(quanteda)
+library(parallel)
+
 ```
 
 ## Download data
@@ -93,7 +95,7 @@ filesSum(blogs,news,twitter)
 
 ```
 
-## Clean Dataset
+## Clean format of the dataset
 ```{r cleaning, cache=TRUE}
 blogs <- iconv(blogs,"UTF-8","ASCII", "")
 news <- iconv(news,"UTF-8","ASCII", "")
@@ -103,27 +105,46 @@ filesSum(blogs,news,twitter)
 
 ## Subset Data
 ```{r subset, cache=TRUE}
-subNum <- .1
-b1 <- sample(blogs,length(blogs)*subNum)
-n1 <- sample(news,length(news)*subNum)
-t1 <- sample(twitter,length(twitter)*subNum)
-filesSum(b1,n1,t1)
+set.seed(2205)
+
+subNum <- .5
+
+b <- sample(seq(1,length(blogs),by=1),size = as.integer(length(blogs)*subNum))
+n <- sample(seq(1,length(news),by=1),size = as.integer(length(news)*subNum))
+t <- sample(seq(1,length(twitter),by=1),size = as.integer(length(twitter)*subNum))
+
+wordSet <- c(blogs[b],news[n],twitter[t])
+testSet <- c(blogs[-b],news[-n],twitter[-t])
 rm(blogs)
 rm(news)
 rm(twitter)
-
+rm(b)
+rm(n)
+rm(t)
 ```
 
-## Merge data files
-```{r merge}
-set.seed(2205)
-trngSets <- c(b1,n1,t1)
-trngTokens <- tokens(trngSets, what = "word", remove_numbers = TRUE, remove_punct = TRUE,
-remove_symbols = TRUE, remove_separators = TRUE,
-remove_twitter = TRUE, remove_hyphens = TRUE, remove_url = TRUE,
-ngrams = 2, skip = 0L, concatenator = " ",
-verbose = FALSE)
-head(trngTokens)
+## create reference tables
+```{r table}
+createTable <- function(wordSet, Ngram){
+   trngTokens <- tokens(wordSet, what = "word", remove_numbers = TRUE, remove_punct = TRUE,
+   remove_symbols = TRUE, remove_separators = TRUE,
+   remove_twitter = TRUE, remove_hyphens = TRUE, remove_url = TRUE,
+   ngrams = Ngram, skip = 0L, concatenator = " ",
+   verbose = FALSE)
+   #Remove anything that begins with a number
+   trngTokens<- tokens_select(trngTokens,"^[0-9]+", selection = "remove", valuetype = "regex", padding = FALSE)
+   #Convert to sparvs document feature matrix
+   nDfm <- dfm(trngTokens, tolower = TRUE)
+   #Remove beginning underscores -- not sure where they come from
+   colnames(nDfm) <- stri_replace_all_regex(featnames(nDfm), "_+", "")
+   dfm_compress(nDfm)
+   #create the table
+   result <- data.table(ngram = featnames(nDfm), count = colSums(nDfm), key = "ngram")
+   result <- subset(result, count>1) #Drop words only seen once
+   result
+}
+
+
 ```
 
 
@@ -131,73 +152,123 @@ head(trngTokens)
 Using the exploratory analysis you performed, build a basic n-gram model for predicting the next word based on the previous 1, 2, or 3 words.
 Starting with an input of 1 word, predict the next.
 
-Prediction based on last word
+Prediction based on frequency columns
 ```{r}
-predFrom1 <- function(w1, biFreq){
+predFromFreq1 <- function(w1, table){
    input <- paste0("^",tolower(w1)," ")
-   values <- grep(input,names(biFreq))
-   if(length(values) != 0){
-      biPred <- sort(biFreq[values],decreasing = TRUE)[1]
-      biPred <- substr(names(biPred), nchar(input), nchar(names(biPred)))
-      biPred
+   values <- table[ngram %like% input]
+   if(dim(values)[1] != 0){
+      values <- values[order(values$count, decreasing = TRUE)]
+      pred <- as.character(values[1,1])
+      pred <- substr(pred, nchar(input), nchar(pred))
+      pred
    }else{
-      # Assume that if there is no prediction word, that it is the end of a sentance (naive... I know)
-      print(".")
+      # unknown word
+      out <- "Unk"
    }
 }
-```
 
-Trial runs from some of the most frequent first words
-```{r}
-predFrom1("He", biFreq)
-predFrom1("I", biFreq)
-predFrom1("That", biFreq)
-predFrom1("in", biFreq)
-predFrom1("have", biFreq)
-predFrom1("but", biFreq)
-predFrom1("we", biFreq)
-predFrom1("they", biFreq)
-predFrom1("under", biFreq)
-predFrom1("exuberant", biFreq)
-predFrom1("fantastic", biFreq)
-predFrom1("lol", biFreq)
-
-```
-
-
-Prediction based on last two words
-```{r}
-predFrom2 <- function(w1, w2, triFreq){
+predFromFreq2 <- function(w1, w2, table){
    input <- paste0("^",tolower(w1)," ", tolower(w2), " ")
-   values <- grep(input,names(triFreq))
-   if(length(values) != 0){
-      biPred <- sort(triFreq[values],decreasing = TRUE)[1]
-      biPred <- substr(names(biPred), nchar(input), nchar(names(biPred)))
-      biPred
+   values <- table[ngram %like% input]
+   if(dim(values)[1] != 0){
+      values <- values[order(values$count, decreasing = TRUE)]
+      pred <- as.character(values[1,1])
+      pred <- substr(pred, nchar(input), nchar(pred))
+      pred
    }else{
-      # Assume that if there is no prediction word, that it is the end of a sentance (naive... I know)
-      print(".")
+      # unknown word
+      out <- "Unk"
    }
 }
+
+predFromFreq3 <- function(w1, w2, w3, table){
+   input <- paste0("^",tolower(w1)," ", tolower(w2), " ", tolower(w2), " ")
+   values <- table[ngram %like% input]
+   if(dim(values)[1] != 0){
+      values <- values[order(values$count, decreasing = TRUE)]
+      pred <- as.character(values[1,1])
+      pred <- substr(pred, nchar(input), nchar(pred))
+      pred
+   }else{
+      # unknown word
+      out <- "Unk"
+   }
+}
+
 ```
 
-Trial runs from some of the most frequent first words
+
+Create frequency tables
 ```{r}
-predFrom2("He","was", triFreq)
-predFrom2("I","was", triFreq)
-predFrom2("That","the", triFreq)
-predFrom2("in","the", triFreq)
-predFrom2("have","a", triFreq)
-predFrom2("but","i", triFreq)
-predFrom2("one","Of", triFreq)
-predFrom2("me","Of", triFreq)
-
+uniTable <- createTable(wordSet, 1)
+biTable <- createTable(wordSet, 2)
+triTable <- createTable(wordSet, 3) 
+quadTable <- createTable(wordSet, 4)
 ```
-
-
-
-
-
 
 # Build a model to handle unseen n-grams
 In some cases people will want to type a combination of words that does not appear in the corpora. Build a model to handle cases where a particular n-gram isn't observed.
+
+```{r}
+predictNext <- function(input, biTable, triTable, quadTable){
+   splitIn <- tstrsplit(input," ")
+   if(length(splitIn)>2){
+      check <- tail(unlist(splitIn),3)
+      out <- predFromFreq3(check[1],check[2],check[3],quadTable)
+      if(out=="Unk"){
+         out <- predFromFreq2(check[2],check[3],triTable)
+      }
+      if(out=="Unk"){
+         out <- predFromFreq1(check[3],biTable)
+      }
+   }else if (length(splitIn)==2){
+      check <- unlist(splitIn)
+      out <- predFromFreq2(check[1],check[2],triTable)
+      if(out=="Unk"){
+         print(splitIn[[1]][2])
+         out <- predFromFreq1(check[2],biTable)
+      }
+   }else if (length(splitIn)==1){
+      out <- predFromFreq1(input,biTable)
+   }
+   out
+}
+```
+# Testing
+Some code for testing it out
+```{r testing}
+input<- sample(quadTable$ngram,1)
+
+for(i in 1:10){ input <- paste(input, predictNext(input, biTable, triTable, quadTable),collapse = " ")}
+input
+
+input <- paste(input, predictNext(input, biTable, triTable, quadTable),collapse = " ")
+input
+
+#Quiz 3
+input <- "The guy in front of me just bought a pound of bacon, a bouquet, and a case of"
+predictNext(input, biTable, triTable, quadTable)
+input <- "You're the reason why I smile everyday. Can you follow me please? It would mean the"
+predictNext(input, biTable, triTable, quadTable)
+input <- "Hey sunshine, can you follow me and make me the"
+predictNext(input, biTable, triTable, quadTable)
+input <- "Very early observations on the Bills game: Offense still struggling but the"
+predictNext(input, biTable, triTable, quadTable)
+input <- "Go on a romantic date at the"
+predictNext(input, biTable, triTable, quadTable)
+input <- "Well I'm pretty sure my granny has some old bagpipes in her garage I'll dust them off and be on my"
+predictNext(input, biTable, triTable, quadTable)
+input <- "Ohhhhh #PointBreak is on tomorrow. Love that film and haven't seen it in quite some"
+predictNext(input, biTable, triTable, quadTable)
+input <- "After the ice bucket challenge Louis will push his long wet hair out of his eyes with his little"
+predictNext(input, biTable, triTable, quadTable)
+input <- "Be grateful for the good times and keep the faith during the"
+predictNext(input, biTable, triTable, quadTable)
+input <- "If this isn't the cutest thing you've ever seen, then you must be"
+predictNext(input, biTable, triTable, quadTable)
+
+
+```
+
+
