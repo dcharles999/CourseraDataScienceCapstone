@@ -1,0 +1,12 @@
+name: fastWordPrediction
+title: fastWordPrediction
+username:
+account: dcharles999
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 291460
+bundleId: 1248197
+url: https://dcharles999.shinyapps.io/fastWordPrediction/
+when: 1519962026.45966
+asMultiple: FALSE
+asStatic: FALSE
